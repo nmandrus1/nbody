@@ -12,6 +12,30 @@ const SOLAR_MASS: f64 = (4. * PI * PI);
 const DAYS_PER_YEAR: f64 = 365.24;
 const BODIES_COUNT: usize = 5;
 
+const INTERACTIONS_COUNT: usize = BODIES_COUNT * (BODIES_COUNT - 1) / 2;
+const ROUNDED_INTERACTIONS_COUNT: usize = INTERACTIONS_COUNT + INTERACTIONS_COUNT % 2;
+
+#[derive(Clone, Copy)]
+#[repr(C)]
+union Interactions {
+    scalars: [f64; ROUNDED_INTERACTIONS_COUNT],
+    vectors: [__m128d; ROUNDED_INTERACTIONS_COUNT / 2],
+}
+
+impl Interactions {
+    fn as_scalars(&mut self) -> &mut [f64; ROUNDED_INTERACTIONS_COUNT] {
+        // Safety: the in-memory representation of `f64` and `__m128d` is
+        // compatible, so accesses to the union members is safe in any order.
+        unsafe { &mut self.scalars }
+    }
+
+    fn as_vectors(&mut self) -> &mut [__m128d; ROUNDED_INTERACTIONS_COUNT / 2] {
+        // Safety: the in-memory representation of `f64` and `__m128d` is
+        // compatible, so accesses to the union members is safe in any order.
+        unsafe { &mut self.vectors }
+    }
+}
+
 static mut solar_Bodies: [body; BODIES_COUNT] = [
     body {
         // Sun
@@ -81,15 +105,17 @@ static mut solar_Bodies: [body; BODIES_COUNT] = [
 // interactions between all the bodies, update each body's velocity based on
 // those interactions, and update each body's position by the distance it
 // travels in a timestep at it's updated velocity.
-unsafe fn advance(bodies: *mut body) {
+unsafe fn advance(
+    bodies: &mut [body; BODIES_COUNT],
+    position_Deltas: &mut [Interactions; 3],
+    magnitudes: &mut Interactions,
+) {
     // Figure out how many total different interactions there are between each
     // body and every other body. Some of the calculations for these
     // interactions will be calculated two at a time by using x86 SSE
     // instructions and because of that it will also be useful to have a
     // ROUNDED_INTERACTIONS_COUNT that is equal to the next highest even number
     // which is equal to or greater than INTERACTIONS_COUNT.
-    const INTERACTIONS_COUNT: usize = (BODIES_COUNT * (BODIES_COUNT - 1) / 2);
-    const ROUNDED_INTERACTIONS_COUNT: usize = (INTERACTIONS_COUNT + INTERACTIONS_COUNT % 2);
 
     // It's useful to have two arrays to keep track of the position_Deltas
     // and magnitudes of force between the bodies for each interaction. For the
@@ -101,13 +127,7 @@ unsafe fn advance(bodies: *mut body) {
     // SSE registers. Both of these arrays are also set to contain
     // ROUNDED_INTERACTIONS_COUNT elements to simplify one of the following
     // loops and to also keep the second and third arrays in position_Deltas
-    // aligned properly.
-    #[derive(Copy, Clone)]
-    #[repr(align(16))]
-    struct Align16([f64; ROUNDED_INTERACTIONS_COUNT]);
-
-    static mut position_Deltas: [Align16; 3] = [Align16([0.; ROUNDED_INTERACTIONS_COUNT]); 3];
-    static mut magnitudes: Align16 = Align16([0.; ROUNDED_INTERACTIONS_COUNT]);
+    // aligned properly. #[derive(Copy, Clone)]
 
     // Calculate the position_Deltas between the bodies for each interaction.
     {
@@ -115,8 +135,8 @@ unsafe fn advance(bodies: *mut body) {
         for i in 0..BODIES_COUNT - 1 {
             for j in i + 1..BODIES_COUNT {
                 for m in 0..3 {
-                    position_Deltas[m].0[k] =
-                        (*bodies.add(i)).position[m] - (*bodies.add(j)).position[m];
+                    position_Deltas[m].as_scalars()[k] =
+                        bodies[i].position[m] - bodies[j].position[m];
                 }
                 k += 1;
             }
@@ -131,7 +151,7 @@ unsafe fn advance(bodies: *mut body) {
         let mut position_Delta = [_mm_setzero_pd(); 3];
 
         for m in 0..3 {
-            position_Delta[m] = *(&position_Deltas[m].0 as *const f64 as *const __m128d).add(i);
+            position_Delta[m] = position_Deltas[m].as_vectors()[i];
         }
 
         let distance_Squared: __m128d = _mm_add_pd(
@@ -175,12 +195,10 @@ unsafe fn advance(bodies: *mut body) {
         // distance_Squared which was already calculated earlier. Additionally
         // this method is probably a little more accurate due to less rounding
         // as well.
-        (magnitudes.0.as_mut_ptr() as *mut __m128d)
-            .add(i)
-            .write(_mm_mul_pd(
-                _mm_div_pd(_mm_set1_pd(0.01), distance_Squared),
-                distance_Reciprocal,
-            ));
+        magnitudes.as_vectors()[i] = _mm_mul_pd(
+            _mm_div_pd(_mm_set1_pd(0.01), distance_Squared),
+            distance_Reciprocal,
+        );
     }
 
     // Use the calculated magnitudes of force to update the velocities for all
@@ -191,11 +209,11 @@ unsafe fn advance(bodies: *mut body) {
             for j in i + 1..BODIES_COUNT {
                 // Precompute the products of the mass and magnitude since it can be
                 // reused a couple times.
-                let i_mass_magnitude = (*bodies.add(i)).mass * magnitudes.0[k];
-                let j_mass_magnitude = (*bodies.add(j)).mass * magnitudes.0[k];
+                let i_mass_magnitude = bodies[i].mass * magnitudes.as_scalars()[k];
+                let j_mass_magnitude = bodies[j].mass * magnitudes.as_scalars()[k];
                 for m in 0..3 {
-                    (*bodies.add(i)).velocity[m] -= position_Deltas[m].0[k] * j_mass_magnitude;
-                    (*bodies.add(j)).velocity[m] += position_Deltas[m].0[k] * i_mass_magnitude;
+                    bodies[i].velocity[m] -= position_Deltas[m].as_scalars()[k] * j_mass_magnitude;
+                    bodies[j].velocity[m] += position_Deltas[m].as_scalars()[k] * i_mass_magnitude;
                 }
                 k += 1;
             }
@@ -205,7 +223,7 @@ unsafe fn advance(bodies: *mut body) {
     // Use the updated velocities to update the positions for all of the bodies.
     for i in 0..BODIES_COUNT {
         for m in 0..3 {
-            (*bodies.add(i)).position[m] += 0.01 * (*bodies.add(i)).velocity[m];
+            bodies[i].position[m] += 0.01 * bodies[i].velocity[m];
         }
     }
 }
@@ -253,12 +271,20 @@ unsafe fn output_Energy(bodies: &mut [body; BODIES_COUNT]) {
 }
 
 fn main() {
+    let mut position_Deltas: [Interactions; 3] = [Interactions {
+        scalars: [0.0; ROUNDED_INTERACTIONS_COUNT],
+    }; 3];
+
+    let mut magnitudes: Interactions = Interactions {
+        scalars: [0.0; ROUNDED_INTERACTIONS_COUNT],
+    };
+
     unsafe {
         offset_Momentum(&mut solar_Bodies);
         output_Energy(&mut solar_Bodies);
         let c = std::env::args().nth(1).unwrap().parse().unwrap();
         for _ in 0..c {
-            advance(solar_Bodies.as_mut_ptr())
+            advance(&mut solar_Bodies, &mut position_Deltas, &mut magnitudes);
         }
         output_Energy(&mut solar_Bodies);
     }
