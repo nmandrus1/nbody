@@ -1,5 +1,16 @@
-use std::arch::x86_64::*;
+use serde_derive::Serialize;
+
 use std::f64::consts::PI;
+use std::io::BufWriter;
+
+#[derive(Debug, Serialize, Default, Clone, Copy)]
+struct Timestamp {
+    time: usize,
+    planet: usize,
+    x: f64,
+    y: f64,
+    z: f64,
+}
 
 struct Body {
     position: [f64; 3],
@@ -23,58 +34,58 @@ const STARTING_STATE: [Body; BODIES_COUNT] = [
     Body {
         // Jupiter
         position: [
-            4.84143144246472090e+00,
-            -1.16032004402742839e+00,
-            -1.03622044471123109e-01,
+            4.841_431_442_464_721,
+            -1.160_320_044_027_428_4,
+            -1.036_220_444_711_231_1e-1,
         ],
         velocity: [
-            1.66007664274403694e-03 * DAYS_PER_YEAR,
-            7.69901118419740425e-03 * DAYS_PER_YEAR,
-            -6.90460016972063023e-05 * DAYS_PER_YEAR,
+            1.660_076_642_744_037e-3 * DAYS_PER_YEAR,
+            7.699_011_184_197_404e-3 * DAYS_PER_YEAR,
+            -6.904_600_169_720_63e-5 * DAYS_PER_YEAR,
         ],
-        mass: 9.54791938424326609e-04 * SOLAR_MASS,
+        mass: 9.547_919_384_243_266e-4 * SOLAR_MASS,
     },
     Body {
         // Saturn
         position: [
-            8.34336671824457987e+00,
-            4.12479856412430479e+00,
-            -4.03523417114321381e-01,
+            8.343_366_718_244_58,
+            4.124_798_564_124_305,
+            -4.035_234_171_143_214e-1,
         ],
         velocity: [
-            -2.76742510726862411e-03 * DAYS_PER_YEAR,
-            4.99852801234917238e-03 * DAYS_PER_YEAR,
-            2.30417297573763929e-05 * DAYS_PER_YEAR,
+            -2.767_425_107_268_624e-3 * DAYS_PER_YEAR,
+            4.998_528_012_349_172e-3 * DAYS_PER_YEAR,
+            2.304_172_975_737_639_3e-5 * DAYS_PER_YEAR,
         ],
-        mass: 2.85885980666130812e-04 * SOLAR_MASS,
+        mass: 2.858_859_806_661_308e-4 * SOLAR_MASS,
     },
     Body {
         // Uranus
         position: [
-            1.28943695621391310e+01,
-            -1.51111514016986312e+01,
-            -2.23307578892655734e-01,
+            1.289_436_956_213_913_1e1,
+            -1.511_115_140_169_863_1e1,
+            -2.233_075_788_926_557_3e-1,
         ],
         velocity: [
-            2.96460137564761618e-03 * DAYS_PER_YEAR,
-            2.37847173959480950e-03 * DAYS_PER_YEAR,
-            -2.96589568540237556e-05 * DAYS_PER_YEAR,
+            2.964_601_375_647_616e-3 * DAYS_PER_YEAR,
+            2.378_471_739_594_809_5e-3 * DAYS_PER_YEAR,
+            -2.965_895_685_402_375_6e-5 * DAYS_PER_YEAR,
         ],
-        mass: 4.36624404335156298e-05 * SOLAR_MASS,
+        mass: 4.366_244_043_351_563e-5 * SOLAR_MASS,
     },
     Body {
         // Neptune
         position: [
-            1.53796971148509165e+01,
-            -2.59193146099879641e+01,
-            1.79258772950371181e-01,
+            1.537_969_711_485_091_7e1,
+            -2.591_931_460_998_796_4e1,
+            1.792_587_729_503_711_8e-1,
         ],
         velocity: [
-            2.68067772490389322e-03 * DAYS_PER_YEAR,
-            1.62824170038242295e-03 * DAYS_PER_YEAR,
-            -9.51592254519715870e-05 * DAYS_PER_YEAR,
+            2.680_677_724_903_893_2e-3 * DAYS_PER_YEAR,
+            1.628_241_700_382_423e-3 * DAYS_PER_YEAR,
+            -9.515_922_545_197_159e-5 * DAYS_PER_YEAR,
         ],
-        mass: 5.15138902046611451e-05 * SOLAR_MASS,
+        mass: 5.151_389_020_466_114_5e-5 * SOLAR_MASS,
     },
 ];
 
@@ -175,17 +186,47 @@ fn advance(bodies: &mut [Body; BODIES_COUNT]) {
     }
 }
 
-fn main() {
-    let c = std::env::args().nth(1).unwrap().parse().unwrap();
+fn make_timestamps(bodies: &[Body; BODIES_COUNT], t: usize) -> [Timestamp; BODIES_COUNT] {
+    let mut timestamps = [Timestamp::default(); BODIES_COUNT];
 
+    for (i, body) in bodies.iter().enumerate() {
+        timestamps[i] = Timestamp {
+            time: t,
+            planet: i,
+            x: body.position[0],
+            y: body.position[1],
+            z: body.position[2],
+        };
+    }
+
+    timestamps
+}
+
+fn main() {
+    let args = std::env::args().collect::<Vec<String>>();
+    let c = args[1].parse().unwrap();
+    let out_file = &args[2];
+
+    let mut timestamps = Vec::with_capacity(c);
     let mut solar_bodies = STARTING_STATE;
 
     offset_momentum(&mut solar_bodies);
     output_energy(&mut solar_bodies);
 
-    for _ in 0..c {
+    for t in 0..c {
         advance(&mut solar_bodies);
+        timestamps.push(make_timestamps(&solar_bodies, t));
     }
 
-    output_energy(&mut solar_bodies)
+    output_energy(&mut solar_bodies);
+
+    // file io setup
+    let mut f = std::fs::File::create(out_file).unwrap();
+    let buf_writer = BufWriter::new(&mut f);
+    let mut wtr = csv::Writer::from_writer(buf_writer);
+
+    for ts in timestamps.iter().flatten() {
+        wtr.serialize(ts).unwrap();
+    }
+    wtr.flush().unwrap();
 }
