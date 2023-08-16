@@ -46,5 +46,5 @@ def animate(i):
     ax.legend()
 
 # Create the animation
-ani = animation.FuncAnimation(fig, animate, frames=range(0, int(max(data['time'])), 10), interval=50)
+ani = animation.FuncAnimation(fig, animate, frames=range(0, int(max(data['time'])), 50), interval=1)
 plt.show()
